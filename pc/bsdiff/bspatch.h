@@ -30,6 +30,14 @@
 
 # include <stdint.h>
 
+typedef struct
+{
+    uint32_t old_file_size;
+    uint8_t old_file_md5[16];
+    uint32_t new_file_size;
+    uint8_t new_file_md5[16];
+
+}header_t;
 struct bspatch_stream
 {
 	void* opaque;

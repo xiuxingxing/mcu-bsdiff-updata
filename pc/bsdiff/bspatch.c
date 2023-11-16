@@ -27,6 +27,8 @@
 
 #include <limits.h>
 #include "bspatch.h"
+#include "stdio.h"
+#include "stdlib.h"
 
 static int64_t offtin(uint8_t *buf)
 {
@@ -45,7 +47,7 @@ static int64_t offtin(uint8_t *buf)
 
 	return y;
 }
-
+//stream为补丁文件解压后的文件流
 int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, struct bspatch_stream* stream)
 {
 	uint8_t buf[8];
@@ -96,6 +98,100 @@ int bspatch(const uint8_t* old, int64_t oldsize, uint8_t* new, int64_t newsize, 
 
 	return 0;
 }
+
+int read_header(header_t *header,FILE *updata_file)
+{
+    if(fread(header,1,sizeof(header_t),updata_file)==0)
+        return -1;
+    return 0;
+}
+
+
+
+int read_updata_file(const struct bspatch_stream* stream, void* buffer, int size)
+{
+    FILE *file=(FILE *)(stream->opaque);
+    if(fread(buffer,sizeof(uint8_t),size,file)!=size)
+        return -1;
+    return 0;
+
+}
+
+
+int main(void)
+{
+    uint32_t old_file_size,restore_file_size;//文件大小
+    uint8_t *old_file_buff,*restore_file_buff;//缓存指针
+    FILE *old_file,*restore_file,*updata_file;//文件指针
+
+    header_t header;
+
+//提取旧文件
+    if(((old_file = fopen("test_file_old.txt","rb")) == NULL) ||//打开文件不错误
+        (fseek(old_file,0,SEEK_END) == -1)||//跳到末尾不错误
+        ((old_file_size = ftell(old_file)) == 0)||//获取文件大小不为0
+        (fseek(old_file,0,SEEK_SET) == -1)||//跳回开头不错误
+        ((old_file_buff=malloc(old_file_size))==NULL)||//申请old文件内存
+        (old_file_size!=fread(old_file_buff,sizeof(uint8_t),old_file_size,old_file)))
+    {
+        printf("old file get fail");
+        goto end;
+    }
+//打开补丁文件
+    if((updata_file=fopen("updata_file","rb"))==NULL)
+    {
+        printf("updata file get fail");
+        goto end;
+    }
+//获取补丁文件头
+    read_header(&header,updata_file);
+
+//得到新文件长度
+    restore_file_size=header.new_file_size;
+    printf("restore_file_size = 0x%x    %dbyte\n",restore_file_size,restore_file_size);
+    restore_file_buff=malloc(restore_file_size);
+    struct bspatch_stream stream={
+        .opaque=updata_file,
+        .read=read_updata_file
+    };
+
+//差分计算
+    if(bspatch(old_file_buff,old_file_size,restore_file_buff,restore_file_size,&stream)!=0)
+    {
+        printf("bspatch fail");
+        goto end;
+    }
+
+//写入文件
+    if(((restore_file=fopen("restore_file.txt","wb"))==NULL) ||
+        (fwrite(restore_file_buff,1,restore_file_size,restore_file)!=restore_file_size))
+    {
+       printf("restore_file write fail");
+       goto end; 
+    }
+
+
+
+
+//
+    printf("success");
+
+end:
+    fclose(old_file);
+    fclose(restore_file);
+    fclose(updata_file);
+
+
+    free(old_file_buff);
+    free(restore_file_buff);
+
+    return 0;
+}
+
+
+
+
+
 
 #if defined(BSPATCH_EXECUTABLE)
 
@@ -153,7 +249,7 @@ int main(int argc,char * argv[])
 	if (memcmp(header, "ENDSLEY/BSDIFF43", 16) != 0)
 		errx(1, "Corrupt patch\n");
 
-	/* Read lengths from header */
+	/* Read lengths from header *///从文件头读取文件长度
 	newsize=offtin(header+16);
 	if(newsize<0)
 		errx(1,"Corrupt patch\n");
@@ -161,7 +257,7 @@ int main(int argc,char * argv[])
 	/* Close patch file and re-open it via libbzip2 at the right places */
 	if(((fd=open(argv[1],O_RDONLY,0))<0) ||
 		((oldsize=lseek(fd,0,SEEK_END))==-1) ||
-		((old=malloc(oldsize+1))==NULL) ||
+		((old=malloc(oldsize+1))==NULL) ||//只是用来提取old文件的缓存，事实上可直接读取，oldsize获取的问题仍待解决
 		(lseek(fd,0,SEEK_SET)!=0) ||
 		(read(fd,old,oldsize)!=oldsize) ||
 		(fstat(fd, &sb)) ||

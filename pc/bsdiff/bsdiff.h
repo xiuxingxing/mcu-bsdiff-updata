@@ -33,12 +33,23 @@
 
 struct bsdiff_stream
 {
-	void* opaque;
+	void* opaque;//用户自定义功能
 
 	void* (*malloc)(size_t size);
 	void (*free)(void* ptr);
-	int (*write)(struct bsdiff_stream* stream, const void* buffer, int size);
+	int (*write)(struct bsdiff_stream* stream, const void* buffer, int size);//向文件流写入数据
 };
+
+
+typedef struct
+{
+    uint32_t old_file_size;
+    uint8_t old_file_md5[16];
+    uint32_t new_file_size;
+    uint8_t new_file_md5[16];
+
+}header_t;
+
 
 int bsdiff(const uint8_t* old, int64_t oldsize, const uint8_t* new, int64_t newsize, struct bsdiff_stream* stream);
 

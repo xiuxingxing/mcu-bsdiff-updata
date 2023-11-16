@@ -29,6 +29,8 @@
 
 #include <limits.h>
 #include <string.h>
+#include "stdio.h"
+#include "stdlib.h"
 
 #define MIN(x,y) (((x)<(y)) ? (x) : (y))
 
@@ -166,7 +168,7 @@ static int64_t search(const int64_t *I,const uint8_t *old,int64_t oldsize,
 		return search(I,old,oldsize,new,newsize,st,x,pos);
 	};
 }
-
+//涉及到写文件大小
 static void offtout(int64_t x,uint8_t *buf)
 {
 	int64_t y;
@@ -184,15 +186,16 @@ static void offtout(int64_t x,uint8_t *buf)
 
 	if(x<0) buf[7]|=0x80;
 }
-
+//只操作了stream的write项
 static int64_t writedata(struct bsdiff_stream* stream, const void* buffer, int64_t length)
 {
 	int64_t result = 0;
 
-	while (length > 0)
+	while (length > 0)//
 	{
-		const int smallsize = (int)MIN(length, INT_MAX);
-		const int writeresult = stream->write(stream, buffer, smallsize);
+		const int smallsize = (int)MIN(length, INT_MAX);//如果是最小，写入最小
+        //应该是在文件的buff位置写入数据
+		const int writeresult = stream->write(stream, buffer, smallsize);//并不是嵌套
 		if (writeresult == -1)
 		{
 			return -1;
@@ -212,7 +215,7 @@ struct bsdiff_request
 	int64_t oldsize;
 	const uint8_t* new;
 	int64_t newsize;
-	struct bsdiff_stream* stream;
+	struct bsdiff_stream* stream;//文件流
 	int64_t *I;
 	uint8_t *buffer;
 };
@@ -296,17 +299,17 @@ static int bsdiff_internal(const struct bsdiff_request req)
 			offtout((scan-lenb)-(lastscan+lenf),buf+8);
 			offtout((pos-lenb)-(lastpos+lenf),buf+16);
 
-			/* Write control data */
+			/* Write control data *///写控制数据到文件流
 			if (writedata(req.stream, buf, sizeof(buf)))
 				return -1;
 
-			/* Write diff data */
+			/* Write diff data *///写不同数据到文件流
 			for(i=0;i<lenf;i++)
 				buffer[i]=req.new[lastscan+i]-req.old[lastpos+i];
 			if (writedata(req.stream, buffer, lenf))
 				return -1;
 
-			/* Write extra data */
+			/* Write extra data *///写额外数据到文件流
 			for(i=0;i<(scan-lenb)-(lastscan+lenf);i++)
 				buffer[i]=req.new[lastscan+lenf+i];
 			if (writedata(req.stream, buffer, (scan-lenb)-(lastscan+lenf)))
@@ -325,36 +328,163 @@ int bsdiff(const uint8_t* old, int64_t oldsize, const uint8_t* new, int64_t news
 {
 	int result;
 	struct bsdiff_request req;
-
+    //I申请老文件 *8大小
 	if((req.I=stream->malloc((oldsize+1)*sizeof(int64_t)))==NULL)
 		return -1;
-
+    //buffer申请新文件大小
 	if((req.buffer=stream->malloc(newsize+1))==NULL)
 	{
 		stream->free(req.I);
 		return -1;
 	}
 
-	req.old = old;
+	req.old = old;//
 	req.oldsize = oldsize;
 	req.new = new;
 	req.newsize = newsize;
 	req.stream = stream;
-
+    //输入到bsdiff_internal
 	result = bsdiff_internal(req);
 
+    //释放内存，结束
 	stream->free(req.buffer);
 	stream->free(req.I);
 
 	return result;
 }
 
+/*写入文件头*/
+int write_header(uint32_t old_file_size,uint8_t *old_file_buff,
+                uint32_t new_file_size,uint8_t *new_file_buff,FILE *updata_file)
+{
+    header_t header={0};
+    header.new_file_size=new_file_size;
+    printf("new file size = 0x%x    %dbyte\n",new_file_size,new_file_size);
+    if(fwrite(&header,1,sizeof(header_t),updata_file)!=sizeof(header_t))//写入文件头
+        return -1;
+    return 0;
+}
+
+
+
+
+//opaque自定义文件指针用
+int write_updata_file(struct bsdiff_stream* stream, const void* buffer, int size)
+{
+    FILE *file=(FILE *)(stream->opaque);
+    if(fwrite(buffer,sizeof(uint8_t),size,file)!=size)
+        return -1;
+    return 0;
+
+}
+
+
+
+
+
+int main(void)
+{
+    uint32_t old_file_size,new_file_size;//文件大小
+    uint8_t *old_file_buff,*new_file_buff;//缓存指针
+    FILE *old_file,*new_file,*updata_file;//文件指针
+
+//提取新旧文件
+    if(((old_file = fopen("test_file_old.txt","rb")) == NULL) ||//打开文件不错误
+        (fseek(old_file,0,SEEK_END) == -1)||//跳到末尾不错误
+        ((old_file_size = ftell(old_file)) == 0)||//获取文件大小不为0
+        (fseek(old_file,0,SEEK_SET) == -1)||//跳回开头不错误
+        ((old_file_buff=malloc(old_file_size))==NULL)||//申请old文件内存
+        (old_file_size!=fread(old_file_buff,sizeof(uint8_t),old_file_size,old_file)))
+    {
+        printf("old file get fail");
+        goto end;
+    }
+
+
+    if(((new_file = fopen("test_file_new.txt","rb")) == NULL) ||//打开文件不错误
+        (fseek(new_file,0,SEEK_END) == -1)||//跳到末尾不错误
+        ((new_file_size = ftell(new_file)) == 0)||//获取文件大小不为0
+        (fseek(new_file,0,SEEK_SET) == -1)||//跳回开头不错误
+        ((new_file_buff=malloc(new_file_size))==NULL)||//申请new文件内存
+        (new_file_size!=fread(new_file_buff,sizeof(uint8_t),new_file_size,new_file)))
+    {
+        printf("new file get fail");
+        goto end;
+    }
+//打开/创建升级文件
+    if((updata_file = fopen("updata_file","wb")) == NULL)
+    {
+        printf("creat updata file fail");
+        goto end;
+    }
+//写入文件头
+    if(write_header(old_file_size,old_file_buff,new_file_size,new_file_buff,updata_file)!=0)
+    {
+        printf("write header fail");
+        goto end;
+    }
+
+
+
+//开始执行
+    struct bsdiff_stream stream={
+        .free=free,
+        .malloc=malloc,
+        .write=write_updata_file,
+        .opaque=updata_file
+    };
+
+    if(bsdiff(old_file_buff, old_file_size, new_file_buff, new_file_size, &stream))
+    {
+        printf("bsdiff fail");
+        goto end;
+    }
+
+
+
+
+
+    printf("success");
+
+
+
+
+    
+    
+
+end:
+    fclose(old_file);
+    fclose(new_file);
+    fclose(updata_file);
+
+
+    free(old_file_buff);
+    free(new_file_buff);
+    return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #if defined(BSDIFF_EXECUTABLE)
 
 #include <sys/types.h>
 
-#include <bzlib.h>
-#include <err.h>
+// #include <bzlib.h>
+// #include <err.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -415,9 +545,9 @@ int main(int argc,char *argv[])
 		err(1, "%s", argv[3]);
 
 	/* Write header (signature+newsize)*/
-	offtout(newsize, buf);
-	if (fwrite("ENDSLEY/BSDIFF43", 16, 1, pf) != 1 ||
-		fwrite(buf, sizeof(buf), 1, pf) != 1)
+	offtout(newsize, buf);//将长度转换写入buf
+	if (fwrite("ENDSLEY/BSDIFF43", 16, 1, pf) != 1 ||//写入文件头标志
+		fwrite(buf, sizeof(buf), 1, pf) != 1)//写入长度
 		err(1, "Failed to write header");
 
 
